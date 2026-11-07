@@ -80,7 +80,7 @@ namespace Img2Ffu
                     bool isFixed = true;
                     using (var reader = new FullFlashUpdateReaderStream(options.BaseFFU, (ulong)storeIndex))
                     {
-                        storeSectorSize = (uint)(reader.SectorSize > 0 ? reader.SectorSize : metadata.SectorSize);
+                        storeSectorSize = reader.SectorSize > 0 ? (uint)reader.SectorSize : metadata.SectorSize;
                         devicePath = !string.IsNullOrEmpty(reader.DevicePath) ? reader.DevicePath : baseImage.Stores[storeIndex].DevicePath;
                         if (string.IsNullOrEmpty(devicePath))
                             devicePath = "VenHw(B615F1F5-5088-43CD-809C-A16E52487D00)";
