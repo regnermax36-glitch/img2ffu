@@ -171,25 +171,23 @@ namespace Img2Ffu
                                 remaining -= read;
                             }
                         }
-
-                        // Blank DPP to prevent Thor2 DPP_PARTITION_HAS_DATA_IN_FFU error
-                        BlankPartition(baseFs, baseParts, "DPP", storeSectorSize, logging);
                     }
                     catch
                     {
                         logging.Log($"Port FFU does not have store #{storeIndex + 1} or failed to stream, keeping base as-is.", ILoggingLevel.Warning);
                     }
 
+                    // Exclude DPP so no data is written to it in the final FFU (prevents Thor2 0x220002)
                     inputs.Add(new InputForStore(
                         baseImgPath,
                         devicePath,
                         isFixed,
                         100,
-                        Array.Empty<string>()
+                        new[] { "DPP" }
                     ));
                 }
 
-                logging.Log("Generating ported FFU with fully auto-detected parameters...");
+                logging.Log("Generating ported FFU with fully auto-detected parameters (DPP excluded)...");
                 List<Img2Ffu.Writer.Data.DeviceTargetInfo> deviceTargets = new();
                 FFUFactory.GenerateFFU(
                     inputs,
@@ -209,31 +207,6 @@ namespace Img2Ffu
             finally
             {
                 try { Directory.Delete(tempDir, true); } catch { }
-            }
-        }
-
-        private static void BlankPartition(Stream fs, List<PartitionInfo> parts, string name, uint sectorSize, ILogging logging)
-        {
-            var part = parts.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
-            if (part == null)
-            {
-                logging.Log($"  Partition {name} not found, nothing to blank.", ILoggingLevel.Warning);
-                return;
-            }
-
-            long size = (long)(part.LastSector - part.FirstSector + 1) * sectorSize;
-            long offset = (long)part.FirstSector * sectorSize;
-
-            logging.Log($"  Blanking {name} partition ({size / (1024.0 * 1024):F0} MB) to avoid Thor2 overwrite error...");
-
-            fs.Seek(offset, SeekOrigin.Begin);
-            byte[] zero = new byte[4 * 1024 * 1024];
-            long remaining = size;
-            while (remaining > 0)
-            {
-                int toWrite = (int)Math.Min(zero.Length, remaining);
-                fs.Write(zero, 0, toWrite);
-                remaining -= toWrite;
             }
         }
 
