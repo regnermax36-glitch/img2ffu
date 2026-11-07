@@ -8,7 +8,7 @@ This tool takes a **base FFU** (device-specific firmware) and a **port FFU** (so
 
 **Full auto-detection**: You only need to supply the two FFU files. The tool automatically detects and reuses every size, platform ID, OS version, anti-theft version, block size, sector size, device path, FFU version, and other metadata from the base FFU.
 
-It extracts the base store once, then streams only the needed partitions from the port FFU directly into it (no full port extraction). This keeps temporary disk usage to roughly the size of the base store instead of 3x.
+It creates a **sparse temporary image** and only writes the real data blocks from the base FFU, then streams the needed partitions from the port FFU into it. On Windows this keeps disk usage close to the actual data size of the FFUs instead of the full logical disk size.
 
 Supports V1 and V2 FFU formats, multiple stores, and compression (Windows-only for compressed).
 
@@ -28,7 +28,7 @@ ffu-porter --base-ffu base.ffu --port-ffu port.ffu --ffu-file output.ffu [option
 
 - `--port-partitions` : Comma-separated list of partitions to take from the port FFU (e.g. `MainOS,Data`). Default: all non-provisioning partitions.
 - `--keep-provisioning` : Always keep provisioning partitions from base (default: true)
-- `--temp-dir` : Directory for temporary image files. Defaults to system temp. Use a drive with enough free space for the base store size.
+- `--temp-dir` : Directory for temporary image files. Defaults to system temp.
 - `--secure-boot-signing-command` / `-t` : Optional signing command
 
 ### Example
@@ -44,7 +44,7 @@ ffu-porter ^
 ## Notes
 
 - All sizes, platform IDs, OS version, device paths, etc. are auto-detected from the base FFU.
-- Temporary space is now roughly 1x the base store size (port partitions are streamed, not fully extracted).
+- Temporary files are sparse on Windows: a 3–4 GB FFU no longer expands to hundreds of GB of real disk usage.
 - Partition sizes must match between base and port for a partition to be ported; otherwise the base version is kept.
 - Provisioning partitions (modem, DPP, bootloaders, etc.) are kept from the base by default to avoid bricking.
 - Always make a full device backup before flashing.
