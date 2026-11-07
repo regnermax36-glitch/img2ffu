@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace Img2Ffu
@@ -71,7 +72,7 @@ namespace Img2Ffu
             string tempDir = Path.Combine(baseTemp, "ffu_port_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
             logging.Log($"Using temp directory: {tempDir}");
-            logging.Log("Low-space mode: only the base store is extracted to disk (~1x store size). Port partitions are streamed directly.");
+            logging.Log("Sparse low-space mode: temporary image is sparse (only real data blocks are allocated on disk).");
 
             try
             {
@@ -87,7 +88,6 @@ namespace Img2Ffu
                     string devicePath;
                     bool isFixed = true;
 
-                    // Extract base store only
                     try
                     {
                         using (var reader = new FullFlashUpdateReaderStream(options.BaseFFU, (ulong)storeIndex))
@@ -99,10 +99,12 @@ namespace Img2Ffu
 
                             logging.Log($"  Detected Sector Size: {storeSectorSize}");
                             logging.Log($"  Detected Device Path: {devicePath}");
-                            logging.Log($"  Extracting base store (~{reader.Length / (1024.0 * 1024 * 1024):F1} GB)...");
+                            logging.Log($"  Logical store size: {reader.Length / (1024.0 * 1024 * 1024):F1} GB (sparse file, only real data allocated)");
 
-                            using var fs = File.Create(baseImgPath);
-                            reader.CopyTo(fs);
+                            CreateSparseFile(baseImgPath, reader.Length);
+                            using var fs = new FileStream(baseImgPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                            // Use the sparse-aware CopyTo that only writes real blocks
+                            reader.CopyTo(fs, null);
                         }
                     }
                     catch (IOException ioEx) when (ioEx.Message.Contains("space") || ioEx.HResult == -2147024784)
@@ -112,7 +114,7 @@ namespace Img2Ffu
                         throw;
                     }
 
-                    // Stream port partitions directly into the base image (no full port extraction)
+                    // Stream port partitions directly into the sparse base image
                     try
                     {
                         using var portReader = new FullFlashUpdateReaderStream(options.PortFFU, (ulong)storeIndex);
@@ -207,6 +209,35 @@ namespace Img2Ffu
             {
                 try { Directory.Delete(tempDir, true); } catch { }
             }
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool DeviceIoControl(
+            IntPtr hDevice,
+            uint dwIoControlCode,
+            IntPtr lpInBuffer,
+            uint nInBufferSize,
+            IntPtr lpOutBuffer,
+            uint nOutBufferSize,
+            out uint lpBytesReturned,
+            IntPtr lpOverlapped);
+
+        private const uint FSCTL_SET_SPARSE = 0x000900C4;
+
+        private static void CreateSparseFile(string path, long length)
+        {
+            using var fs = new FileStream(path, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                uint bytesReturned;
+                bool ok = DeviceIoControl(fs.SafeFileHandle.DangerousGetHandle(), FSCTL_SET_SPARSE,
+                    IntPtr.Zero, 0, IntPtr.Zero, 0, out bytesReturned, IntPtr.Zero);
+                if (!ok)
+                {
+                    // Fall back to normal file if sparse fails
+                }
+            }
+            fs.SetLength(length);
         }
 
         private class DetectedMetadata
