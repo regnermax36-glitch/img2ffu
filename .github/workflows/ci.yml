@@ -12,66 +12,46 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        target: [win-x86,win-x64,win-arm64,linux-x64,linux-arm64,osx-x64,osx-arm64]
         include:
           - target: win-x86
-            platform: win
-            architecture: x86
+            rid: win-x86
           - target: win-x64
-            platform: win
-            architecture: x64
+            rid: win-x64
           - target: win-arm64
-            platform: win
-            architecture: arm64
+            rid: win-arm64
           - target: linux-x64
-            platform: linux
-            architecture: x64
+            rid: linux-x64
           - target: linux-arm64
-            platform: linux
-            architecture: arm64
+            rid: linux-arm64
           - target: osx-x64
-            platform: osx
-            architecture: x64
+            rid: osx-x64
           - target: osx-arm64
-            platform: osx
-            architecture: arm64
+            rid: osx-arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: 'recursive'
 
       - name: Install .NET SDK
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
 
-      - name: Add MSBuild to PATH
-        uses: microsoft/setup-msbuild@v2
+      - name: Restore
+        run: dotnet restore Img2Ffu.sln
 
-      - name: Build Utilities
-        shell: pwsh
+      - name: Publish
         run: |
-          msbuild /m /t:restore,img2ffu:publish /p:Platform=${{ matrix.architecture }} /p:RuntimeIdentifier=${{ matrix.platform }}-${{ matrix.architecture }} /p:PublishDir=${{ github.workspace }}/artifacts/${{ matrix.platform }}-${{ matrix.architecture }} /p:PublishSingleFile=true /p:PublishTrimmed=false /p:Configuration=Release /p:IncludeNativeLibrariesForSelfExtract=true Img2Ffu.sln
+          dotnet publish Img2Ffu/Img2Ffu.csproj `
+            -c Release `
+            -r ${{ matrix.rid }} `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:PublishTrimmed=false `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -o ${{ github.workspace }}/artifacts/${{ matrix.target }}
 
-      - name: Create PDB Output Directory
-        shell: pwsh
-        run: |
-          mkdir ${{ github.workspace }}\artifacts\${{ matrix.platform }}-${{ matrix.architecture }}-symbols
-
-      - name: Move PDBs
-        shell: pwsh
-        run: |
-          move ${{ github.workspace }}\artifacts\${{ matrix.platform }}-${{ matrix.architecture }}\*.pdb ${{ github.workspace }}\artifacts\${{ matrix.platform }}-${{ matrix.architecture }}-symbols
-
-      - name: Upload artifact (Binaries)
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.platform }}-${{ matrix.architecture }}-binaries
-          path: ${{ github.workspace }}/artifacts/${{ matrix.platform }}-${{ matrix.architecture }}
-
-      - name: Upload artifact (Symbols)
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.platform }}-${{ matrix.architecture }}-symbols
-          path: ${{ github.workspace }}/artifacts/${{ matrix.platform }}-${{ matrix.architecture }}-symbols
+          name: ${{ matrix.target }}-binaries
+          path: ${{ github.workspace }}/artifacts/${{ matrix.target }}
