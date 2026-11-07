@@ -43,7 +43,6 @@ namespace Img2Ffu
             int storeCount = baseImage.Stores.Count;
             logging.Log($"Base FFU has {storeCount} store(s).");
 
-            // Global metadata auto-detected from base
             var metadata = ExtractMetadata(baseImage, baseSigned);
             logging.Log($"Detected Platform IDs: {string.Join(", ", metadata.PlatformIds)}");
             logging.Log($"Detected OS Version: {metadata.OsVersion}");
@@ -72,7 +71,7 @@ namespace Img2Ffu
             string tempDir = Path.Combine(baseTemp, "ffu_port_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
             logging.Log($"Using temp directory: {tempDir}");
-            logging.Log("Note: Large FFUs require significant free space (roughly 2-3x the size of the largest store). Use --temp-dir if needed.");
+            logging.Log("Low-space mode: only the base store is extracted to disk (~1x store size). Port partitions are streamed directly.");
 
             try
             {
@@ -83,13 +82,12 @@ namespace Img2Ffu
                     logging.Log($"Processing store #{storeIndex + 1}...");
 
                     string baseImgPath = Path.Combine(tempDir, $"base_store{storeIndex}.img");
-                    string portImgPath = Path.Combine(tempDir, $"port_store{storeIndex}.img");
-                    string mergedImgPath = Path.Combine(tempDir, $"merged_store{storeIndex}.img");
 
-                    // Extract base store and capture per-store details
                     uint storeSectorSize;
                     string devicePath;
                     bool isFixed = true;
+
+                    // Extract base store only
                     try
                     {
                         using (var reader = new FullFlashUpdateReaderStream(options.BaseFFU, (ulong)storeIndex))
@@ -101,6 +99,7 @@ namespace Img2Ffu
 
                             logging.Log($"  Detected Sector Size: {storeSectorSize}");
                             logging.Log($"  Detected Device Path: {devicePath}");
+                            logging.Log($"  Extracting base store (~{reader.Length / (1024.0 * 1024 * 1024):F1} GB)...");
 
                             using var fs = File.Create(baseImgPath);
                             reader.CopyTo(fs);
@@ -113,37 +112,76 @@ namespace Img2Ffu
                         throw;
                     }
 
-                    // Extract port store (assume same count)
+                    // Stream port partitions directly into the base image (no full port extraction)
                     try
                     {
-                        using (var reader = new FullFlashUpdateReaderStream(options.PortFFU, (ulong)storeIndex))
+                        using var portReader = new FullFlashUpdateReaderStream(options.PortFFU, (ulong)storeIndex);
+                        using var baseFs = File.Open(baseImgPath, FileMode.Open, FileAccess.ReadWrite);
+
+                        var baseParts = ParseGPT(baseFs, storeSectorSize);
+                        var portParts = ParseGPT(portReader, storeSectorSize);
+
+                        logging.Log($"  Base partitions: {string.Join(", ", baseParts.Select(p => p.Name))}");
+                        logging.Log($"  Port partitions: {string.Join(", ", portParts.Select(p => p.Name))}");
+
+                        foreach (var basePart in baseParts)
                         {
-                            using var fs = File.Create(portImgPath);
-                            reader.CopyTo(fs);
+                            bool takeFromPort = portPartitions.Count > 0
+                                ? portPartitions.Contains(basePart.Name)
+                                : !DefaultProvisioningPartitions.Contains(basePart.Name);
+
+                            if (options.KeepProvisioning && DefaultProvisioningPartitions.Contains(basePart.Name))
+                                takeFromPort = false;
+
+                            if (!takeFromPort)
+                                continue;
+
+                            var portPart = portParts.FirstOrDefault(p => string.Equals(p.Name, basePart.Name, StringComparison.OrdinalIgnoreCase));
+                            if (portPart == null)
+                            {
+                                logging.Log($"  Partition {basePart.Name} not found in port, keeping from base.", ILoggingLevel.Warning);
+                                continue;
+                            }
+
+                            long baseSize = (long)(basePart.LastSector - basePart.FirstSector + 1) * storeSectorSize;
+                            long portSize = (long)(portPart.LastSector - portPart.FirstSector + 1) * storeSectorSize;
+
+                            if (baseSize != portSize)
+                            {
+                                logging.Log($"  Partition {basePart.Name} size mismatch (base: {baseSize}, port: {portSize}), keeping from base.", ILoggingLevel.Warning);
+                                continue;
+                            }
+
+                            logging.Log($"  Porting partition {basePart.Name} ({baseSize / (1024.0 * 1024):F0} MB)...");
+
+                            long baseOffset = (long)basePart.FirstSector * storeSectorSize;
+                            long portOffset = (long)portPart.FirstSector * storeSectorSize;
+
+                            baseFs.Seek(baseOffset, SeekOrigin.Begin);
+                            portReader.Seek(portOffset, SeekOrigin.Begin);
+
+                            byte[] buffer = new byte[4 * 1024 * 1024];
+                            long remaining = baseSize;
+                            while (remaining > 0)
+                            {
+                                int toRead = (int)Math.Min(buffer.Length, remaining);
+                                int read = portReader.Read(buffer, 0, toRead);
+                                if (read == 0) break;
+                                baseFs.Write(buffer, 0, read);
+                                remaining -= read;
+                            }
                         }
-                    }
-                    catch (IOException ioEx) when (ioEx.Message.Contains("space") || ioEx.HResult == -2147024784)
-                    {
-                        logging.Log($"Not enough disk space while extracting port store to '{portImgPath}'.", ILoggingLevel.Error);
-                        logging.Log("Please free up space or specify a different drive with --temp-dir <path>", ILoggingLevel.Error);
-                        throw;
                     }
                     catch
                     {
-                        logging.Log($"Port FFU does not have store #{storeIndex + 1}, skipping port for this store.", ILoggingLevel.Warning);
-                        File.Copy(baseImgPath, mergedImgPath, true);
-                        goto AddInput;
+                        logging.Log($"Port FFU does not have store #{storeIndex + 1} or failed to stream, keeping base as-is.", ILoggingLevel.Warning);
                     }
 
-                    // Merge
-                    MergeImages(baseImgPath, portImgPath, mergedImgPath, portPartitions, options.KeepProvisioning, storeSectorSize, logging);
-
-                AddInput:
                     inputs.Add(new InputForStore(
-                        mergedImgPath,
+                        baseImgPath,
                         devicePath,
                         isFixed,
-                        100, // reasonable default for blank buffer; not critical for correctness
+                        100,
                         Array.Empty<string>()
                     ));
                 }
@@ -185,7 +223,6 @@ namespace Img2Ffu
         {
             var meta = new DetectedMetadata();
 
-            // Parse manifest thoroughly
             string manifest = image.ManifestData ?? "";
             foreach (string rawLine in manifest.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
             {
@@ -223,84 +260,10 @@ namespace Img2Ffu
                     meta.PlatformIds = store.PlatformIDs.ToList();
             }
 
-            // Also consider DeviceTargetInfos if present
-            if (image.DeviceTargetInfos.Any())
-            {
-                // Additional targeting info can be logged or used later if needed
-            }
-
             if (meta.PlatformIds.Count == 0)
                 meta.PlatformIds.Add("Microsoft.Generic.Platform");
 
             return meta;
-        }
-
-        private static void MergeImages(string baseImg, string portImg, string mergedImg, HashSet<string> portPartitions, bool keepProvisioning, uint sectorSize, ILogging logging)
-        {
-            File.Copy(baseImg, mergedImg, true);
-
-            using var baseFs = File.Open(mergedImg, FileMode.Open, FileAccess.ReadWrite);
-            using var portFs = File.OpenRead(portImg);
-
-            var baseParts = ParseGPT(baseFs, sectorSize);
-            var portParts = ParseGPT(portFs, sectorSize);
-
-            logging.Log($"  Base partitions: {string.Join(", ", baseParts.Select(p => p.Name))}");
-            logging.Log($"  Port partitions: {string.Join(", ", portParts.Select(p => p.Name))}");
-
-            foreach (var basePart in baseParts)
-            {
-                bool takeFromPort = false;
-                if (portPartitions.Count > 0)
-                {
-                    takeFromPort = portPartitions.Contains(basePart.Name);
-                }
-                else
-                {
-                    takeFromPort = !DefaultProvisioningPartitions.Contains(basePart.Name);
-                }
-
-                if (keepProvisioning && DefaultProvisioningPartitions.Contains(basePart.Name))
-                    takeFromPort = false;
-
-                if (!takeFromPort)
-                    continue;
-
-                var portPart = portParts.FirstOrDefault(p => string.Equals(p.Name, basePart.Name, StringComparison.OrdinalIgnoreCase));
-                if (portPart == null)
-                {
-                    logging.Log($"  Partition {basePart.Name} not found in port, keeping from base.", ILoggingLevel.Warning);
-                    continue;
-                }
-
-                long baseSize = (long)(basePart.LastSector - basePart.FirstSector + 1) * sectorSize;
-                long portSize = (long)(portPart.LastSector - portPart.FirstSector + 1) * sectorSize;
-
-                if (baseSize != portSize)
-                {
-                    logging.Log($"  Partition {basePart.Name} size mismatch (base: {baseSize}, port: {portSize}), keeping from base.", ILoggingLevel.Warning);
-                    continue;
-                }
-
-                logging.Log($"  Porting partition {basePart.Name} ({baseSize} bytes)...");
-
-                long baseOffset = (long)basePart.FirstSector * sectorSize;
-                long portOffset = (long)portPart.FirstSector * sectorSize;
-
-                baseFs.Seek(baseOffset, SeekOrigin.Begin);
-                portFs.Seek(portOffset, SeekOrigin.Begin);
-
-                byte[] buffer = new byte[1024 * 1024];
-                long remaining = baseSize;
-                while (remaining > 0)
-                {
-                    int toRead = (int)Math.Min(buffer.Length, remaining);
-                    int read = portFs.Read(buffer, 0, toRead);
-                    if (read == 0) break;
-                    baseFs.Write(buffer, 0, read);
-                    remaining -= read;
-                }
-            }
         }
 
         private class PartitionInfo
@@ -313,6 +276,8 @@ namespace Img2Ffu
         private static List<PartitionInfo> ParseGPT(Stream stream, uint sectorSize)
         {
             var parts = new List<PartitionInfo>();
+            long originalPos = stream.Position;
+
             stream.Seek(0, SeekOrigin.Begin);
             byte[] headerBuf = new byte[Math.Max(512, (int)sectorSize * 2)];
             stream.Read(headerBuf, 0, headerBuf.Length);
@@ -340,7 +305,10 @@ namespace Img2Ffu
                 }
             }
             if (efiPos < 0)
+            {
+                stream.Seek(originalPos, SeekOrigin.Begin);
                 return parts;
+            }
 
             uint maxPartitions = BitConverter.ToUInt32(headerBuf, efiPos + 0x50);
             uint entrySize = BitConverter.ToUInt32(headerBuf, efiPos + 0x54);
@@ -368,6 +336,7 @@ namespace Img2Ffu
                 parts.Add(new PartitionInfo { Name = name, FirstSector = first, LastSector = last });
             }
 
+            stream.Seek(originalPos, SeekOrigin.Begin);
             return parts;
         }
     }
