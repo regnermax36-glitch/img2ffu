@@ -122,7 +122,7 @@ namespace Img2Ffu
                 }
 
                 logging.Log("Generating ported FFU with fully auto-detected parameters...");
-                List<DeviceTargetInfo> deviceTargets = new();
+                List<Img2Ffu.Writer.Data.DeviceTargetInfo> deviceTargets = new();
                 FFUFactory.GenerateFFU(
                     inputs,
                     options.OutputFFUFile,
