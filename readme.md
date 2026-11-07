@@ -8,7 +8,7 @@ This tool takes a **base FFU** (device-specific firmware) and a **port FFU** (so
 
 **Full auto-detection**: You only need to supply the two FFU files. The tool automatically detects and reuses every size, platform ID, OS version, anti-theft version, block size, sector size, device path, FFU version, and other metadata from the base FFU.
 
-It extracts the raw store images from both FFUs, merges partitions intelligently (keeping device-specific/provisioning partitions from the base, and OS partitions from the port when sizes match), then rebuilds a valid FFU using the fully detected base metadata.
+It extracts the base store once, then streams only the needed partitions from the port FFU directly into it (no full port extraction). This keeps temporary disk usage to roughly the size of the base store instead of 3x.
 
 Supports V1 and V2 FFU formats, multiple stores, and compression (Windows-only for compressed).
 
@@ -28,7 +28,7 @@ ffu-porter --base-ffu base.ffu --port-ffu port.ffu --ffu-file output.ffu [option
 
 - `--port-partitions` : Comma-separated list of partitions to take from the port FFU (e.g. `MainOS,Data`). Default: all non-provisioning partitions.
 - `--keep-provisioning` : Always keep provisioning partitions from base (default: true)
-- `--temp-dir` : Directory for temporary image files. Use a drive with enough free space for large FFUs (roughly 2-3x the size of the largest store). Defaults to system temp.
+- `--temp-dir` : Directory for temporary image files. Defaults to system temp. Use a drive with enough free space for the base store size.
 - `--secure-boot-signing-command` / `-t` : Optional signing command
 
 ### Example
@@ -44,9 +44,9 @@ ffu-porter ^
 ## Notes
 
 - All sizes, platform IDs, OS version, device paths, etc. are auto-detected from the base FFU.
+- Temporary space is now roughly 1x the base store size (port partitions are streamed, not fully extracted).
 - Partition sizes must match between base and port for a partition to be ported; otherwise the base version is kept.
 - Provisioning partitions (modem, DPP, bootloaders, etc.) are kept from the base by default to avoid bricking.
-- Large FFUs require significant free disk space for temporary images. Use `--temp-dir` to point at a drive with enough room.
 - Always make a full device backup before flashing.
 - For retail devices, unlock the UEFI first.
 - Temp files are cleaned up automatically.
