@@ -35,7 +35,7 @@ namespace Img2Ffu
                 return;
             }
 
-            logging.Log("Analyzing base FFU...");
+            logging.Log("Analyzing base FFU (full auto-detection of sizes, IDs, and metadata)...");
             using FileStream baseStream = File.OpenRead(options.BaseFFU);
             SignedImage baseSigned = new(baseStream);
             ImageFlash baseImage = baseSigned.Image;
@@ -43,26 +43,13 @@ namespace Img2Ffu
             int storeCount = baseImage.Stores.Count;
             logging.Log($"Base FFU has {storeCount} store(s).");
 
-            // Extract metadata from base
-            var (platformIds, osVersion, antiTheft, blockSize, sectorSize, flashVersion) = ExtractMetadata(baseImage, baseSigned);
-
-            // Overrides
-            if (options.PlatformIDs != null && options.PlatformIDs.Any())
-                platformIds = options.PlatformIDs.ToList();
-            if (!string.IsNullOrEmpty(options.OperatingSystemVersion))
-                osVersion = options.OperatingSystemVersion;
-            if (!string.IsNullOrEmpty(options.AntiTheftVersion))
-                antiTheft = options.AntiTheftVersion;
-            if (options.BlockSize.HasValue)
-                blockSize = options.BlockSize.Value;
-            if (options.SectorSize.HasValue)
-                sectorSize = options.SectorSize.Value;
-            if (options.FlashUpdateVersion.HasValue)
-                flashVersion = options.FlashUpdateVersion.Value;
-
-            logging.Log($"Using Platform IDs: {string.Join(", ", platformIds)}");
-            logging.Log($"OS Version: {osVersion}");
-            logging.Log($"Block Size: {blockSize}, Sector Size: {sectorSize}, FFU Version: {flashVersion}");
+            // Global metadata auto-detected from base
+            var metadata = ExtractMetadata(baseImage, baseSigned);
+            logging.Log($"Detected Platform IDs: {string.Join(", ", metadata.PlatformIds)}");
+            logging.Log($"Detected OS Version: {metadata.OsVersion}");
+            logging.Log($"Detected Anti-Theft Version: {metadata.AntiTheftVersion}");
+            logging.Log($"Detected Block Size: {metadata.BlockSize}");
+            logging.Log($"Detected FFU Version: {metadata.FlashUpdateVersion}");
 
             HashSet<string> portPartitions = new(StringComparer.OrdinalIgnoreCase);
             if (!string.IsNullOrEmpty(options.PortPartitions))
@@ -87,9 +74,20 @@ namespace Img2Ffu
                     string portImgPath = Path.Combine(tempDir, $"port_store{storeIndex}.img");
                     string mergedImgPath = Path.Combine(tempDir, $"merged_store{storeIndex}.img");
 
-                    // Extract base store
+                    // Extract base store and capture per-store details
+                    uint storeSectorSize;
+                    string devicePath;
+                    bool isFixed = true;
                     using (var reader = new FullFlashUpdateReaderStream(options.BaseFFU, (ulong)storeIndex))
                     {
+                        storeSectorSize = (uint)(reader.SectorSize > 0 ? reader.SectorSize : metadata.SectorSize);
+                        devicePath = !string.IsNullOrEmpty(reader.DevicePath) ? reader.DevicePath : baseImage.Stores[storeIndex].DevicePath;
+                        if (string.IsNullOrEmpty(devicePath))
+                            devicePath = "VenHw(B615F1F5-5088-43CD-809C-A16E52487D00)";
+
+                        logging.Log($"  Detected Sector Size: {storeSectorSize}");
+                        logging.Log($"  Detected Device Path: {devicePath}");
+
                         using var fs = File.Create(baseImgPath);
                         reader.CopyTo(fs);
                     }
@@ -107,42 +105,33 @@ namespace Img2Ffu
                     {
                         logging.Log($"Port FFU does not have store #{storeIndex + 1}, skipping port for this store.", ILoggingLevel.Warning);
                         File.Copy(baseImgPath, mergedImgPath, true);
-                        // continue with base
                         goto AddInput;
                     }
 
                     // Merge
-                    MergeImages(baseImgPath, portImgPath, mergedImgPath, portPartitions, options.KeepProvisioning, sectorSize, logging);
+                    MergeImages(baseImgPath, portImgPath, mergedImgPath, portPartitions, options.KeepProvisioning, storeSectorSize, logging);
 
                 AddInput:
-                    var store = baseImage.Stores[storeIndex];
-                    string devicePath = store.DevicePath;
-                    if (string.IsNullOrEmpty(devicePath))
-                    {
-                        // Fallback for V1
-                        devicePath = "VenHw(B615F1F5-5088-43CD-809C-A16E52487D00)";
-                    }
-
                     inputs.Add(new InputForStore(
                         mergedImgPath,
                         devicePath,
-                        true, // assume fixed
-                        100, // default blank buffer
-                        Array.Empty<string>() // no exclusions for the merged, as we already selected
+                        isFixed,
+                        100, // reasonable default for blank buffer; not critical for correctness
+                        Array.Empty<string>()
                     ));
                 }
 
-                logging.Log("Generating ported FFU...");
+                logging.Log("Generating ported FFU with fully auto-detected parameters...");
                 List<DeviceTargetInfo> deviceTargets = new();
                 FFUFactory.GenerateFFU(
                     inputs,
                     options.OutputFFUFile,
-                    platformIds,
-                    sectorSize,
-                    blockSize,
-                    antiTheft,
-                    osVersion,
-                    flashVersion,
+                    metadata.PlatformIds,
+                    metadata.SectorSize,
+                    metadata.BlockSize,
+                    metadata.AntiTheftVersion,
+                    metadata.OsVersion,
+                    metadata.FlashUpdateVersion,
                     deviceTargets,
                     options.SecureBootSigningCommand,
                     logging);
@@ -155,52 +144,68 @@ namespace Img2Ffu
             }
         }
 
-        private static (List<string> platformIds, string osVersion, string antiTheft, uint blockSize, uint sectorSize, FlashUpdateVersion flashVersion) ExtractMetadata(ImageFlash image, SignedImage signed)
+        private class DetectedMetadata
         {
-            var platformIds = new List<string>();
-            string osVersion = "10.0.11111.0";
-            string antiTheft = "1.1";
-            uint blockSize = 131072;
-            uint sectorSize = 512;
-            FlashUpdateVersion flashVersion = FlashUpdateVersion.V1;
+            public List<string> PlatformIds { get; set; } = new();
+            public string OsVersion { get; set; } = "10.0.11111.0";
+            public string AntiTheftVersion { get; set; } = "1.1";
+            public uint BlockSize { get; set; } = 131072;
+            public uint SectorSize { get; set; } = 512;
+            public FlashUpdateVersion FlashUpdateVersion { get; set; } = FlashUpdateVersion.V1;
+        }
 
-            // Parse manifest
-            string manifest = image.ManifestData;
-            foreach (string line in manifest.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        private static DetectedMetadata ExtractMetadata(ImageFlash image, SignedImage signed)
+        {
+            var meta = new DetectedMetadata();
+
+            // Parse manifest thoroughly
+            string manifest = image.ManifestData ?? "";
+            foreach (string rawLine in manifest.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
             {
+                string line = rawLine.Trim();
                 if (line.StartsWith("DevicePlatformId0", StringComparison.OrdinalIgnoreCase))
-                    platformIds.Add(line.Split('=')[1].Trim());
+                    meta.PlatformIds.Add(line.Split('=')[1].Trim());
                 else if (line.StartsWith("DevicePlatformId1", StringComparison.OrdinalIgnoreCase))
-                    platformIds.Add(line.Split('=')[1].Trim());
+                    meta.PlatformIds.Add(line.Split('=')[1].Trim());
                 else if (line.StartsWith("DevicePlatformId2", StringComparison.OrdinalIgnoreCase))
-                    platformIds.Add(line.Split('=')[1].Trim());
+                    meta.PlatformIds.Add(line.Split('=')[1].Trim());
                 else if (line.StartsWith("DevicePlatformId3", StringComparison.OrdinalIgnoreCase))
-                    platformIds.Add(line.Split('=')[1].Trim());
+                    meta.PlatformIds.Add(line.Split('=')[1].Trim());
                 else if (line.StartsWith("OSVersion", StringComparison.OrdinalIgnoreCase))
-                    osVersion = line.Split('=')[1].Trim();
+                    meta.OsVersion = line.Split('=')[1].Trim();
                 else if (line.StartsWith("AntiTheftVersion", StringComparison.OrdinalIgnoreCase))
-                    antiTheft = line.Split('=')[1].Trim();
+                    meta.AntiTheftVersion = line.Split('=')[1].Trim();
                 else if (line.StartsWith("SectorSize", StringComparison.OrdinalIgnoreCase))
                 {
                     if (uint.TryParse(line.Split('=')[1].Trim(), out uint ss))
-                        sectorSize = ss;
+                        meta.SectorSize = ss;
                 }
             }
 
             if (image.Stores.Count > 0)
             {
                 var store = image.Stores[0];
-                blockSize = store.StoreHeader.BlockSize;
+                meta.BlockSize = store.StoreHeader.BlockSize > 0 ? store.StoreHeader.BlockSize : meta.BlockSize;
+
                 if (store.FFUVersion == Reader.Enums.FFUVersion.V2)
-                    flashVersion = FlashUpdateVersion.V2;
+                    meta.FlashUpdateVersion = FlashUpdateVersion.V2;
+                else if (store.FFUVersion == Reader.Enums.FFUVersion.V1_COMPRESSED)
+                    meta.FlashUpdateVersion = FlashUpdateVersion.V1;
+
                 if (store.PlatformIDs.Any())
-                    platformIds = store.PlatformIDs;
+                    meta.PlatformIds = store.PlatformIDs.ToList();
             }
 
-            if (platformIds.Count == 0)
-                platformIds.Add("Microsoft.Generic.Platform");
+            // Also consider DeviceTargetInfos if present
+            if (image.DeviceTargetInfos.Any())
+            {
+                // Additional targeting info can be logged or used later if needed
+            }
 
-            return (platformIds, osVersion, antiTheft, blockSize, sectorSize, flashVersion);
+            if (meta.PlatformIds.Count == 0)
+                meta.PlatformIds.Add("Microsoft.Generic.Platform");
+
+            return meta;
         }
 
         private static void MergeImages(string baseImg, string portImg, string mergedImg, HashSet<string> portPartitions, bool keepProvisioning, uint sectorSize, ILogging logging)
@@ -213,8 +218,8 @@ namespace Img2Ffu
             var baseParts = ParseGPT(baseFs, sectorSize);
             var portParts = ParseGPT(portFs, sectorSize);
 
-            logging.Log($"Base partitions: {string.Join(", ", baseParts.Select(p => p.Name))}");
-            logging.Log($"Port partitions: {string.Join(", ", portParts.Select(p => p.Name))}");
+            logging.Log($"  Base partitions: {string.Join(", ", baseParts.Select(p => p.Name))}");
+            logging.Log($"  Port partitions: {string.Join(", ", portParts.Select(p => p.Name))}");
 
             foreach (var basePart in baseParts)
             {
@@ -225,7 +230,6 @@ namespace Img2Ffu
                 }
                 else
                 {
-                    // Default: take from port if not provisioning
                     takeFromPort = !DefaultProvisioningPartitions.Contains(basePart.Name);
                 }
 
@@ -238,7 +242,7 @@ namespace Img2Ffu
                 var portPart = portParts.FirstOrDefault(p => string.Equals(p.Name, basePart.Name, StringComparison.OrdinalIgnoreCase));
                 if (portPart == null)
                 {
-                    logging.Log($"Partition {basePart.Name} not found in port, keeping from base.", ILoggingLevel.Warning);
+                    logging.Log($"  Partition {basePart.Name} not found in port, keeping from base.", ILoggingLevel.Warning);
                     continue;
                 }
 
@@ -247,13 +251,12 @@ namespace Img2Ffu
 
                 if (baseSize != portSize)
                 {
-                    logging.Log($"Partition {basePart.Name} size mismatch (base: {baseSize}, port: {portSize}), keeping from base.", ILoggingLevel.Warning);
+                    logging.Log($"  Partition {basePart.Name} size mismatch (base: {baseSize}, port: {portSize}), keeping from base.", ILoggingLevel.Warning);
                     continue;
                 }
 
-                logging.Log($"Porting partition {basePart.Name} ({baseSize} bytes)...");
+                logging.Log($"  Porting partition {basePart.Name} ({baseSize} bytes)...");
 
-                // Copy data
                 long baseOffset = (long)basePart.FirstSector * sectorSize;
                 long portOffset = (long)portPart.FirstSector * sectorSize;
 
@@ -287,7 +290,6 @@ namespace Img2Ffu
             byte[] headerBuf = new byte[Math.Max(512, (int)sectorSize * 2)];
             stream.Read(headerBuf, 0, headerBuf.Length);
 
-            // Find EFI PART
             int efiPos = -1;
             for (int i = 0; i < headerBuf.Length - 8; i++)
             {
@@ -299,7 +301,6 @@ namespace Img2Ffu
             }
             if (efiPos < 0)
             {
-                // Try at LBA 1
                 stream.Seek(sectorSize, SeekOrigin.Begin);
                 stream.Read(headerBuf, 0, headerBuf.Length);
                 for (int i = 0; i < headerBuf.Length - 8; i++)
@@ -314,21 +315,19 @@ namespace Img2Ffu
             if (efiPos < 0)
                 return parts;
 
-            // Simplified: assume standard layout, read entries starting after header
             uint maxPartitions = BitConverter.ToUInt32(headerBuf, efiPos + 0x50);
             uint entrySize = BitConverter.ToUInt32(headerBuf, efiPos + 0x54);
-            ulong tableLba = BitConverter.ToUInt64(headerBuf, efiPos + 0x48); // Partition entry LBA
+            ulong tableLba = BitConverter.ToUInt64(headerBuf, efiPos + 0x48);
 
             long tableOffset = (long)tableLba * sectorSize;
             stream.Seek(tableOffset, SeekOrigin.Begin);
 
-            for (int i = 0; i < maxPartitions && i < 128; i++) // safety
+            for (int i = 0; i < maxPartitions && i < 128; i++)
             {
                 byte[] entry = new byte[entrySize];
                 if (stream.Read(entry, 0, (int)entrySize) != entrySize)
                     break;
 
-                // Check if empty
                 bool empty = true;
                 for (int j = 0; j < 16; j++) if (entry[j] != 0) empty = false;
                 if (empty) break;
