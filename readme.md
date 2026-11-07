@@ -45,7 +45,7 @@ ffu-porter ^
 
 - All sizes, platform IDs, OS version, device paths, etc. are auto-detected from the base FFU.
 - Temporary files are sparse on Windows: a 3–4 GB FFU no longer expands to hundreds of GB of real disk usage.
-- The DPP partition is automatically blanked in the output FFU to prevent Thor2 `DPP_PARTITION_HAS_DATA_IN_FFU` (0x220002) errors.
+- The DPP partition is completely excluded from the output FFU (no write descriptors target it). This prevents Thor2 `DPP_PARTITION_HAS_DATA_IN_FFU` (0x220002) errors.
 - Partition sizes must match between base and port for a partition to be ported; otherwise the base version is kept.
 - Other provisioning partitions (modem, bootloaders, etc.) are kept from the base by default to avoid bricking.
 - Always make a full device backup before flashing.
