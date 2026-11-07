@@ -4,9 +4,11 @@ Creates a fully ported Full Flash Update (FFU) file by combining a base device F
 
 ## Description
 
-This tool takes a **base FFU** (device-specific firmware containing correct bootloaders, modem, provisioning partitions, platform IDs, etc.) and a **port FFU** (containing the desired OS partitions such as MainOS, Data, etc.), and produces a fully ported FFU ready to flash on the target device.
+This tool takes a **base FFU** (device-specific firmware) and a **port FFU** (source of the OS/partitions to port) and produces a fully ported FFU.
 
-It extracts the raw store images from both FFUs, merges partitions intelligently (keeping device-specific/provisioning partitions from the base, and OS partitions from the port when sizes match), then rebuilds a valid FFU using the base's metadata.
+**Full auto-detection**: You only need to supply the two FFU files. The tool automatically detects and reuses every size, platform ID, OS version, anti-theft version, block size, sector size, device path, FFU version, and other metadata from the base FFU.
+
+It extracts the raw store images from both FFUs, merges partitions intelligently (keeping device-specific/provisioning partitions from the base, and OS partitions from the port when sizes match), then rebuilds a valid FFU using the fully detected base metadata.
 
 Supports V1 and V2 FFU formats, multiple stores, and compression (Windows-only for compressed).
 
@@ -16,7 +18,7 @@ Supports V1 and V2 FFU formats, multiple stores, and compression (Windows-only f
 ffu-porter --base-ffu base.ffu --port-ffu port.ffu --ffu-file output.ffu [options]
 ```
 
-### Required
+### Required (that's all you need)
 
 - `--base-ffu` : Path to the base (device) FFU
 - `--port-ffu` : Path to the port (OS source) FFU
@@ -24,15 +26,9 @@ ffu-porter --base-ffu base.ffu --port-ffu port.ffu --ffu-file output.ffu [option
 
 ### Optional
 
-- `--port-partitions` : Comma-separated list of partitions to take from the port FFU (e.g. `MainOS,Data,EFIESP`). Default: all non-provisioning partitions.
-- `--plat-id` / `-p` : Override platform ID(s) (semicolon separated)
-- `--os-version` / `-o` : Override OS version
-- `--anti-theft-version` / `-a` : Override anti-theft version
-- `--block-size` / `-c` : Override block size
-- `--sector-size` / `-s` : Override sector size
-- `--full-flash-update-version` / `-v` : Override FFU version (V1 or V2)
-- `--secure-boot-signing-command` / `-t` : Optional signing command
+- `--port-partitions` : Comma-separated list of partitions to take from the port FFU (e.g. `MainOS,Data`). Default: all non-provisioning partitions.
 - `--keep-provisioning` : Always keep provisioning partitions from base (default: true)
+- `--secure-boot-signing-command` / `-t` : Optional signing command
 
 ### Example
 
@@ -40,12 +36,12 @@ ffu-porter --base-ffu base.ffu --port-ffu port.ffu --ffu-file output.ffu [option
 ffu-porter ^
   --base-ffu "RM-1085_Base.ffu" ^
   --port-ffu "Generic_Windows10Mobile.ffu" ^
-  --ffu-file "RM-1085_Ported.ffu" ^
-  --port-partitions "MainOS,Data"
+  --ffu-file "RM-1085_Ported.ffu"
 ```
 
 ## Notes
 
+- All sizes, platform IDs, OS version, device paths, etc. are auto-detected from the base FFU.
 - Partition sizes must match between base and port for a partition to be ported; otherwise the base version is kept.
 - Provisioning partitions (modem, DPP, bootloaders, etc.) are kept from the base by default to avoid bricking.
 - Always make a full device backup before flashing.
@@ -58,9 +54,10 @@ Requires .NET 8 SDK.
 
 ```
 dotnet build Img2Ffu.sln -c Release
+dotnet publish Img2Ffu/Img2Ffu.csproj -c Release -r win-x64 --self-contained
 ```
 
-Publish examples are in the publish_*.cmd scripts.
+GitHub Actions automatically builds and publishes binaries for Windows, Linux, and macOS (x64/arm64).
 
 ## Copyright
 
