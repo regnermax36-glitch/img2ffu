@@ -28,6 +28,7 @@ ffu-porter --base-ffu base.ffu --port-ffu port.ffu --ffu-file output.ffu [option
 
 - `--port-partitions` : Comma-separated list of partitions to take from the port FFU (e.g. `MainOS,Data`). Default: all non-provisioning partitions.
 - `--keep-provisioning` : Always keep provisioning partitions from base (default: true)
+- `--temp-dir` : Directory for temporary image files. Use a drive with enough free space for large FFUs (roughly 2-3x the size of the largest store). Defaults to system temp.
 - `--secure-boot-signing-command` / `-t` : Optional signing command
 
 ### Example
@@ -36,7 +37,8 @@ ffu-porter --base-ffu base.ffu --port-ffu port.ffu --ffu-file output.ffu [option
 ffu-porter ^
   --base-ffu "RM-1085_Base.ffu" ^
   --port-ffu "Generic_Windows10Mobile.ffu" ^
-  --ffu-file "RM-1085_Ported.ffu"
+  --ffu-file "RM-1085_Ported.ffu" ^
+  --temp-dir "D:\Temp"
 ```
 
 ## Notes
@@ -44,9 +46,10 @@ ffu-porter ^
 - All sizes, platform IDs, OS version, device paths, etc. are auto-detected from the base FFU.
 - Partition sizes must match between base and port for a partition to be ported; otherwise the base version is kept.
 - Provisioning partitions (modem, DPP, bootloaders, etc.) are kept from the base by default to avoid bricking.
+- Large FFUs require significant free disk space for temporary images. Use `--temp-dir` to point at a drive with enough room.
 - Always make a full device backup before flashing.
 - For retail devices, unlock the UEFI first.
-- Temp files are created in %TEMP% and cleaned up automatically.
+- Temp files are cleaned up automatically.
 
 ## Building
 
