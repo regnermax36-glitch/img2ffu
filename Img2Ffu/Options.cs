@@ -19,6 +19,9 @@ namespace Img2Ffu
         [Option("keep-provisioning", HelpText = "Always keep provisioning partitions from base (default true)", Default = true, Required = false)]
         public bool KeepProvisioning { get; set; } = true;
 
+        [Option("temp-dir", HelpText = "Optional directory for temporary image files. Use a drive with enough free space (recommended for large FFUs). Defaults to system temp.", Required = false)]
+        public string? TempDir { get; set; }
+
         [Option('t', "secure-boot-signing-command", HelpText = "Optional command to sign the resulting FFU file", Default = "", Required = false)]
         public string SecureBootSigningCommand { get; set; } = "";
     }
