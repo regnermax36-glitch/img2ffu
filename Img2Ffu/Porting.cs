@@ -58,9 +58,21 @@ namespace Img2Ffu
                     portPartitions.Add(p);
             }
 
-            string tempDir = Path.Combine(Path.GetTempPath(), "ffu_port_" + Guid.NewGuid().ToString("N"));
+            string baseTemp = string.IsNullOrWhiteSpace(options.TempDir) ? Path.GetTempPath() : options.TempDir!;
+            if (!Directory.Exists(baseTemp))
+            {
+                try { Directory.CreateDirectory(baseTemp); }
+                catch (Exception ex)
+                {
+                    logging.Log($"Failed to create temp directory '{baseTemp}': {ex.Message}", ILoggingLevel.Error);
+                    return;
+                }
+            }
+
+            string tempDir = Path.Combine(baseTemp, "ffu_port_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
             logging.Log($"Using temp directory: {tempDir}");
+            logging.Log("Note: Large FFUs require significant free space (roughly 2-3x the size of the largest store). Use --temp-dir if needed.");
 
             try
             {
@@ -78,18 +90,27 @@ namespace Img2Ffu
                     uint storeSectorSize;
                     string devicePath;
                     bool isFixed = true;
-                    using (var reader = new FullFlashUpdateReaderStream(options.BaseFFU, (ulong)storeIndex))
+                    try
                     {
-                        storeSectorSize = reader.SectorSize > 0 ? (uint)reader.SectorSize : metadata.SectorSize;
-                        devicePath = !string.IsNullOrEmpty(reader.DevicePath) ? reader.DevicePath : baseImage.Stores[storeIndex].DevicePath;
-                        if (string.IsNullOrEmpty(devicePath))
-                            devicePath = "VenHw(B615F1F5-5088-43CD-809C-A16E52487D00)";
+                        using (var reader = new FullFlashUpdateReaderStream(options.BaseFFU, (ulong)storeIndex))
+                        {
+                            storeSectorSize = reader.SectorSize > 0 ? (uint)reader.SectorSize : metadata.SectorSize;
+                            devicePath = !string.IsNullOrEmpty(reader.DevicePath) ? reader.DevicePath : baseImage.Stores[storeIndex].DevicePath;
+                            if (string.IsNullOrEmpty(devicePath))
+                                devicePath = "VenHw(B615F1F5-5088-43CD-809C-A16E52487D00)";
 
-                        logging.Log($"  Detected Sector Size: {storeSectorSize}");
-                        logging.Log($"  Detected Device Path: {devicePath}");
+                            logging.Log($"  Detected Sector Size: {storeSectorSize}");
+                            logging.Log($"  Detected Device Path: {devicePath}");
 
-                        using var fs = File.Create(baseImgPath);
-                        reader.CopyTo(fs);
+                            using var fs = File.Create(baseImgPath);
+                            reader.CopyTo(fs);
+                        }
+                    }
+                    catch (IOException ioEx) when (ioEx.Message.Contains("space") || ioEx.HResult == -2147024784)
+                    {
+                        logging.Log($"Not enough disk space while extracting base store to '{baseImgPath}'.", ILoggingLevel.Error);
+                        logging.Log("Please free up space or specify a different drive with --temp-dir <path>", ILoggingLevel.Error);
+                        throw;
                     }
 
                     // Extract port store (assume same count)
@@ -100,6 +121,12 @@ namespace Img2Ffu
                             using var fs = File.Create(portImgPath);
                             reader.CopyTo(fs);
                         }
+                    }
+                    catch (IOException ioEx) when (ioEx.Message.Contains("space") || ioEx.HResult == -2147024784)
+                    {
+                        logging.Log($"Not enough disk space while extracting port store to '{portImgPath}'.", ILoggingLevel.Error);
+                        logging.Log("Please free up space or specify a different drive with --temp-dir <path>", ILoggingLevel.Error);
+                        throw;
                     }
                     catch
                     {
