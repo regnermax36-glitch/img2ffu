@@ -22,6 +22,12 @@ namespace Img2Ffu
         [Option("temp-dir", HelpText = "Optional directory for temporary image files. Use a drive with enough free space (recommended for large FFUs). Defaults to system temp.", Required = false)]
         public string? TempDir { get; set; }
 
+        [Option("inject", HelpText = "Optional path to a directory or file to inject into the MainOS partition of the output FFU (e.g. compiled shell folder).", Required = false)]
+        public string? InjectPath { get; set; }
+
+        [Option("inject-target", HelpText = "Target path inside MainOS for injection. Default: \\Windows\\SystemApps\\Windows12MobileShell", Default = "\\Windows\\SystemApps\\Windows12MobileShell", Required = false)]
+        public string InjectTarget { get; set; } = "\\Windows\\SystemApps\\Windows12MobileShell";
+
         [Option('t', "secure-boot-signing-command", HelpText = "Optional command to sign the resulting FFU file", Default = "", Required = false)]
         public string SecureBootSigningCommand { get; set; } = "";
     }
