@@ -52,6 +52,11 @@ ffu-porter ^
 - All sizes, platform IDs, OS version, device paths, etc. are auto-detected from the base FFU.
 - Temporary files are sparse on Windows: a 3–4 GB FFU no longer expands to hundreds of GB of real disk usage.
 - The DPP partition is blanked before FFU generation and blank blocks are omitted, preventing Thor2 `DPP_PARTITION_HAS_DATA_IN_FFU` (0x220002) errors without breaking block alignment.
+- Primary bootloader partitions (SBL1/2/3, TZ, RPM, QSEE, HYP, etc.) and their BACKUP_ counterparts are always kept from the base FFU to reduce RKH mismatches.
+- If Thor2 still reports `DEV_RKH_MISMATCH_ERROR` (0x00030007), flash with the skip flag:
+  ```
+  thor2 -mode uefiflash -ffufile result_win12_ffu.ffu -skip_rkh_check
+  ```
 - `--inject` mounts the MainOS NTFS volume (via DiscUtils) and copies the given files into the target path.
 - Partition sizes must match between base and port for a partition to be ported; otherwise the base version is kept.
 - Other provisioning partitions (modem, bootloaders, etc.) are kept from the base by default to avoid bricking.
