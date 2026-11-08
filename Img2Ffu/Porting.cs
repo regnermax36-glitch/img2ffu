@@ -1,3 +1,4 @@
+using DiscUtils.Ntfs;
 using Img2Ffu.Reader;
 using Img2Ffu.Reader.Data;
 using Img2Ffu.Writer;
@@ -174,18 +175,23 @@ namespace Img2Ffu
 
                         // Blank DPP so the writer sees only zeros and omits it (avoids Thor2 0x220002)
                         BlankPartition(baseFs, baseParts, "DPP", storeSectorSize, logging);
+
+                        // Inject compiled shell into MainOS if requested
+                        if (!string.IsNullOrWhiteSpace(options.InjectPath))
+                        {
+                            InjectIntoMainOS(baseFs, baseParts, storeSectorSize, options.InjectPath, options.InjectTarget, logging);
+                        }
                     }
                     catch
                     {
                         logging.Log($"Port FFU does not have store #{storeIndex + 1} or failed to stream, keeping base as-is.", ILoggingLevel.Warning);
                     }
 
-                    // Do not exclude partitions (exclusion breaks block alignment). Blank blocks are skipped by the writer.
                     inputs.Add(new InputForStore(
                         baseImgPath,
                         devicePath,
                         isFixed,
-                        0, // MaximumNumberOfBlankBlocksAllowed = 0 so pure-zero regions (DPP) are omitted
+                        0,
                         Array.Empty<string>()
                     ));
                 }
@@ -210,6 +216,117 @@ namespace Img2Ffu
             finally
             {
                 try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        private static void InjectIntoMainOS(Stream imageStream, List<PartitionInfo> parts, uint sectorSize, string injectPath, string targetPath, ILogging logging)
+        {
+            var mainOs = parts.FirstOrDefault(p => string.Equals(p.Name, "MainOS", StringComparison.OrdinalIgnoreCase));
+            if (mainOs == null)
+            {
+                logging.Log("MainOS partition not found, skipping injection.", ILoggingLevel.Warning);
+                return;
+            }
+
+            long offset = (long)mainOs.FirstSector * sectorSize;
+            long length = (long)(mainOs.LastSector - mainOs.FirstSector + 1) * sectorSize;
+
+            logging.Log($"Injecting '{injectPath}' into MainOS at '{targetPath}'...");
+
+            try
+            {
+                using var partStream = new SubStream(imageStream, offset, length);
+                using var ntfs = new NtfsFileSystem(partStream);
+
+                if (!Directory.Exists(injectPath) && !File.Exists(injectPath))
+                {
+                    logging.Log($"Inject path not found: {injectPath}", ILoggingLevel.Error);
+                    return;
+                }
+
+                string dest = targetPath.Replace('/', '\\').TrimEnd('\\');
+                if (!ntfs.DirectoryExists(dest))
+                    ntfs.CreateDirectory(dest);
+
+                if (File.Exists(injectPath))
+                {
+                    string fileName = Path.GetFileName(injectPath);
+                    string destFile = dest + "\\" + fileName;
+                    using var src = File.OpenRead(injectPath);
+                    using var dst = ntfs.OpenFile(destFile, FileMode.Create, FileAccess.Write);
+                    src.CopyTo(dst);
+                    logging.Log($"  Injected file: {fileName}");
+                }
+                else
+                {
+                    foreach (var file in Directory.EnumerateFiles(injectPath, "*", SearchOption.AllDirectories))
+                    {
+                        string relative = Path.GetRelativePath(injectPath, file).Replace('/', '\\');
+                        string destFile = dest + "\\" + relative;
+                        string destDir = Path.GetDirectoryName(destFile)?.Replace('/', '\\') ?? dest;
+                        if (!ntfs.DirectoryExists(destDir))
+                            ntfs.CreateDirectory(destDir);
+
+                        using var src = File.OpenRead(file);
+                        using var dst = ntfs.OpenFile(destFile, FileMode.Create, FileAccess.Write);
+                        src.CopyTo(dst);
+                        logging.Log($"  Injected: {relative}");
+                    }
+                }
+
+                logging.Log("Injection complete.");
+            }
+            catch (Exception ex)
+            {
+                logging.Log($"Injection failed: {ex.Message}", ILoggingLevel.Error);
+            }
+        }
+
+        private class SubStream : Stream
+        {
+            private readonly Stream _base;
+            private readonly long _offset;
+            private readonly long _length;
+            private long _position;
+
+            public SubStream(Stream baseStream, long offset, long length)
+            {
+                _base = baseStream;
+                _offset = offset;
+                _length = length;
+            }
+
+            public override bool CanRead => true;
+            public override bool CanSeek => true;
+            public override bool CanWrite => true;
+            public override long Length => _length;
+            public override long Position { get => _position; set => _position = value; }
+
+            public override void Flush() => _base.Flush();
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                _base.Seek(_offset + _position, SeekOrigin.Begin);
+                int read = _base.Read(buffer, offset, (int)Math.Min(count, _length - _position));
+                _position += read;
+                return read;
+            }
+            public override long Seek(long offset, SeekOrigin origin)
+            {
+                _position = origin switch
+                {
+                    SeekOrigin.Begin => offset,
+                    SeekOrigin.Current => _position + offset,
+                    SeekOrigin.End => _length + offset,
+                    _ => throw new ArgumentException()
+                };
+                return _position;
+            }
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                _base.Seek(_offset + _position, SeekOrigin.Begin);
+                _base.Write(buffer, offset, count);
+                _position += count;
             }
         }
 
