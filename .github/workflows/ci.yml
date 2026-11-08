@@ -39,7 +39,7 @@ jobs:
       - name: Restore
         run: dotnet restore Img2Ffu.sln
 
-      - name: Publish
+      - name: Publish injector
         run: |
           dotnet publish Img2Ffu/Img2Ffu.csproj `
             -c Release `
@@ -50,8 +50,38 @@ jobs:
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -o ${{ github.workspace }}/artifacts/${{ matrix.target }}
 
+      - name: Build Windows 12 Mobile shell (ARM)
+        if: matrix.rid == 'win-x64'
+        run: |
+          dotnet publish Windows12Mobile/shell/Windows12MobileShell.csproj `
+            -c Release `
+            -r win-arm `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -o ${{ github.workspace }}/artifacts/shell-arm
+
+      - name: Package full injector bundle
+        if: matrix.rid == 'win-x64'
+        run: |
+          New-Item -ItemType Directory -Force -Path ${{ github.workspace }}/artifacts/win12-bundle
+          Copy-Item -Recurse ${{ github.workspace }}/artifacts/win-x64/* ${{ github.workspace }}/artifacts/win12-bundle/
+          if (Test-Path ${{ github.workspace }}/artifacts/shell-arm) {
+            Copy-Item -Recurse ${{ github.workspace }}/artifacts/shell-arm ${{ github.workspace }}/artifacts/win12-bundle/Windows12MobileShell
+          }
+          # Placeholder icons and boot frames (replace with real assets as needed)
+          New-Item -ItemType Directory -Force -Path ${{ github.workspace }}/artifacts/win12-bundle/icons
+          New-Item -ItemType Directory -Force -Path ${{ github.workspace }}/artifacts/win12-bundle/boot_animation
+          "Windows 12 Mobile shell + injector bundle" | Out-File ${{ github.workspace }}/artifacts/win12-bundle/README.txt
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}-binaries
           path: ${{ github.workspace }}/artifacts/${{ matrix.target }}
+
+      - name: Upload full Windows 12 bundle
+        if: matrix.rid == 'win-x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: win12-injector-bundle
+          path: ${{ github.workspace }}/artifacts/win12-bundle
