@@ -171,23 +171,26 @@ namespace Img2Ffu
                                 remaining -= read;
                             }
                         }
+
+                        // Blank DPP so the writer sees only zeros and omits it (avoids Thor2 0x220002)
+                        BlankPartition(baseFs, baseParts, "DPP", storeSectorSize, logging);
                     }
                     catch
                     {
                         logging.Log($"Port FFU does not have store #{storeIndex + 1} or failed to stream, keeping base as-is.", ILoggingLevel.Warning);
                     }
 
-                    // Exclude DPP so no data is written to it in the final FFU (prevents Thor2 0x220002)
+                    // Do not exclude partitions (exclusion breaks block alignment). Blank blocks are skipped by the writer.
                     inputs.Add(new InputForStore(
                         baseImgPath,
                         devicePath,
                         isFixed,
-                        100,
-                        new[] { "DPP" }
+                        0, // MaximumNumberOfBlankBlocksAllowed = 0 so pure-zero regions (DPP) are omitted
+                        Array.Empty<string>()
                     ));
                 }
 
-                logging.Log("Generating ported FFU with fully auto-detected parameters (DPP excluded)...");
+                logging.Log("Generating ported FFU with fully auto-detected parameters (DPP blanked)...");
                 List<Img2Ffu.Writer.Data.DeviceTargetInfo> deviceTargets = new();
                 FFUFactory.GenerateFFU(
                     inputs,
@@ -208,6 +211,32 @@ namespace Img2Ffu
             {
                 try { Directory.Delete(tempDir, true); } catch { }
             }
+        }
+
+        private static void BlankPartition(Stream fs, List<PartitionInfo> parts, string name, uint sectorSize, ILogging logging)
+        {
+            var part = parts.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (part == null)
+            {
+                logging.Log($"  Partition {name} not found, nothing to blank.", ILoggingLevel.Warning);
+                return;
+            }
+
+            long size = (long)(part.LastSector - part.FirstSector + 1) * sectorSize;
+            long offset = (long)part.FirstSector * sectorSize;
+
+            logging.Log($"  Blanking {name} partition ({size / (1024.0 * 1024):F0} MB) so Thor2 sees no data...");
+
+            fs.Seek(offset, SeekOrigin.Begin);
+            byte[] zero = new byte[4 * 1024 * 1024];
+            long remaining = size;
+            while (remaining > 0)
+            {
+                int toWrite = (int)Math.Min(zero.Length, remaining);
+                fs.Write(zero, 0, toWrite);
+                remaining -= toWrite;
+            }
+            fs.Flush();
         }
 
         [DllImport("kernel32.dll", SetLastError = true)]
